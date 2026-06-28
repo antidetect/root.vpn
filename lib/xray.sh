@@ -196,7 +196,11 @@ xray_setup() {
     log "setting up TCP/443 leg — Xray VLESS+REALITY (transport=${TCP_TRANSPORT:-vision})"
     local need=""
     for t in curl qrencode openssl unzip; do command -v "$t" >/dev/null 2>&1 || need="$need $t"; done
-    if [ -n "$need" ]; then log "installing deps:$need"; apt-get install -y $need >/dev/null 2>&1 || warn "apt install may have failed for:$need"; fi
+    if [ -n "$need" ]; then
+        log "installing deps:$need"
+        apt-get update -y >/dev/null 2>&1 || true   # upstream clears apt lists; refresh before install
+        apt-get install -y $need >/dev/null 2>&1 || warn "apt install may have failed for:$need"
+    fi
     install_xray
     xray_init_params
     xray_open_fw

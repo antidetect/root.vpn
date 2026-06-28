@@ -30,6 +30,8 @@
 #   sudo awg2 list [-v]
 #   sudo awg2 rotate-sni <domain>    # new QUIC SNI, re-apply, regen all clients
 #   sudo awg2 rotate-i1              # fresh QUIC Initial (same SNI), regen
+#   sudo awg2 rotate-reality         # new REALITY keypair (TCP/443 leg)
+#   sudo awg2 rotate-reality-target <host>   # change the REALITY decoy site
 #   sudo awg2 status
 #   sudo awg2 uninstall
 #   sudo awg2 help
@@ -60,6 +62,21 @@ AWG_WORKDIR="${AWG_WORKDIR:-/root/awg-hardened}"
 AWG_CONF="${AWG_CONF:-/etc/amnezia/amneziawg/awg0.conf}"
 AWG_IFACE="${AWG_IFACE:-awg0}"
 SELF_RAW_BASE="${SELF_RAW_BASE:-}"             # optional raw URL base to fetch lib/ in curl|bash mode
+
+# -------- TCP/443 leg (Xray VLESS+REALITY) — co-located with AWG/UDP ----------
+TCP_ENABLED="${TCP_ENABLED:-0}"                # 1 = also stand up the TCP/443 REALITY leg
+TCP_PORT="${TCP_PORT:-443}"                    # TCP (AWG uses UDP/443; no conflict)
+TCP_TRANSPORT="${TCP_TRANSPORT:-vision}"       # vision (China-leaning) | xhttp (RU-hardened)
+REALITY_DEST="${REALITY_DEST:-}"               # decoy site host[:443]; "" -> randomized pick
+REALITY_SERVERNAME="${REALITY_SERVERNAME:-}"   # SNI; defaults to host of REALITY_DEST
+XRAY_VERSION="${XRAY_VERSION:-v26.3.27}"       # pinned; MUST be >= v25.6.8
+XRAY_FP="${XRAY_FP:-chrome}"                    # client uTLS fingerprint
+# MAX extras (optional)
+CDN_DOMAIN="${CDN_DOMAIN:-}"                    # set + CDN_CERT/CDN_KEY to add a CDN-fronted XHTTP+TLS inbound
+CDN_CERT="${CDN_CERT:-}"; CDN_KEY="${CDN_KEY:-}"; CDN_PATH="${CDN_PATH:-/}"
+CDN_PORT="${CDN_PORT:-8443}"; CDN_PUBLIC_PORT="${CDN_PUBLIC_PORT:-443}"
+VLESS_DECRYPTION="${VLESS_DECRYPTION:-none}"           # PQ VLESS-Encryption (advanced) server side
+VLESS_ENCRYPTION_CLIENT="${VLESS_ENCRYPTION_CLIENT:-none}"  # ...and client side
 
 # Load defaults.conf sitting next to the script (preferred way to bake config).
 if [ -f "$SCRIPT_DIR/defaults.conf" ]; then
@@ -234,7 +251,7 @@ install_self() {
     mkdir -p "$AWG_WORKDIR/lib"
     cp -f "$SELF_SRC" "$AWG_WORKDIR/awg2" 2>/dev/null || true
     [ -f "$SCRIPT_DIR/defaults.conf" ] && cp -f "$SCRIPT_DIR/defaults.conf" "$AWG_WORKDIR/defaults.conf" 2>/dev/null || true
-    [ -f "$SCRIPT_DIR/lib/quic_i1.py" ] && cp -f "$SCRIPT_DIR/lib/quic_i1.py" "$AWG_WORKDIR/lib/quic_i1.py" 2>/dev/null || true
+    [ -d "$SCRIPT_DIR/lib" ] && cp -rf "$SCRIPT_DIR/lib/." "$AWG_WORKDIR/lib/" 2>/dev/null || true
     chmod +x "$AWG_WORKDIR/awg2" 2>/dev/null || true
     ln -sf "$AWG_WORKDIR/awg2" /usr/local/sbin/awg2 2>/dev/null || true
 }
@@ -313,6 +330,13 @@ cmd_install() {
     apply_quic_i1
     install_self
 
+    # --- optional TCP/443 leg: Xray VLESS+REALITY, co-located with AWG/UDP ---
+    local tcp_on=0
+    if [ "${TCP_ENABLED:-0}" = "1" ]; then
+        if declare -f xray_setup >/dev/null; then xray_setup; tcp_on=1
+        else warn "TCP_ENABLED=1 but lib/xray.sh not found — TCP/443 leg skipped"; fi
+    fi
+
     if [ -n "$AWG_FIRST_CLIENT" ]; then
         if ! manage list 2>/dev/null | grep -qw "$AWG_FIRST_CLIENT"; then
             log "creating first client '$AWG_FIRST_CLIENT'"
@@ -323,14 +347,21 @@ cmd_install() {
         if [ "$AWG_MIMICRY" != "off" ]; then
             manage regen "$AWG_FIRST_CLIENT" >/dev/null 2>&1 || warn "regen of $AWG_FIRST_CLIENT failed - check 'awg2 status'"
         fi
+        [ "$tcp_on" = "1" ] && xray_add_client "$AWG_FIRST_CLIENT"
     fi
 
     self_checks
-    [ -n "$AWG_FIRST_CLIENT" ] && print_client "$AWG_FIRST_CLIENT"
+    if [ -n "$AWG_FIRST_CLIENT" ]; then
+        print_client "$AWG_FIRST_CLIENT"
+        [ "$tcp_on" = "1" ] && xray_print_client "$AWG_FIRST_CLIENT"
+    fi
     echo
     ok  "done. Manage with: sudo awg2 add <name> | remove <name> | list | rotate-sni <domain>"
-    warn "remember: AmneziaWG 2.0 is UDP-only. If a network blocks all UDP / allows only TCP-443-to-CDN,"
-    warn "          this cannot connect there - keep an OpenVPN+Cloak or VLESS+REALITY fallback on the same VPS."
+    if [ "$tcp_on" = "1" ]; then
+        ok  "TCP/443 fallback (VLESS+REALITY) is live — each client gets TWO QRs (AWG + vless://). Rotate: awg2 rotate-reality"
+    else
+        warn "AmneziaWG 2.0 is UDP-only. Set TCP_ENABLED=1 (VLESS+REALITY on TCP/443) for UDP-blocked networks."
+    fi
 }
 
 cmd_rotate_sni() {
@@ -358,11 +389,50 @@ cmd_status() {
     awg show "$AWG_IFACE" 2>/dev/null || warn "interface not up"
     echo; { grep -E '^(ListenPort|I1|H1|H2|H3|H4|S1|S2|S3|S4|Jc|Jmin|Jmax) ' "$AWG_CONF" 2>/dev/null || true; } | sed 's/^I1 = .*/I1 = <quic-mimicry blob hidden>/'
     echo; manage list -v 2>/dev/null || true
+    if [ "${TCP_ENABLED:-0}" = "1" ] && declare -f xray_status >/dev/null; then echo; log "TCP/443 leg (Xray VLESS+REALITY):"; xray_status; fi
+}
+
+# add a client to BOTH legs (AWG/UDP + VLESS/TCP), print both QRs
+cmd_add() {
+    need_root
+    local name="${1:-}"; [ -n "$name" ] || die "usage: awg2 add <name> [--expires=DUR] [--psk]"
+    if ! manage list 2>/dev/null | grep -qw "$name"; then
+        manage add "$@" >/dev/null 2>&1 || warn "AWG add failed for $name"
+    fi
+    [ "$AWG_MIMICRY" != "off" ] && manage regen "$name" >/dev/null 2>&1 || true
+    print_client "$name"
+    if [ "${TCP_ENABLED:-0}" = "1" ] && declare -f xray_add_client >/dev/null && have_xray; then
+        xray_add_client "$name"
+        xray_print_client "$name"
+    fi
+}
+
+cmd_remove() {
+    need_root
+    local name="${1:-}"; [ -n "$name" ] || die "usage: awg2 remove <name>"
+    manage remove "$name" >/dev/null 2>&1 || warn "AWG remove failed for $name"
+    if [ "${TCP_ENABLED:-0}" = "1" ] && declare -f xray_remove_client >/dev/null; then
+        xray_remove_client "$name" || warn "TCP remove failed for $name"
+    fi
+    ok "removed $name"
+}
+
+cmd_list() {
+    need_root
+    log "AmneziaWG (UDP/443) clients:"; manage list "$@" 2>/dev/null || true
+    if [ "${TCP_ENABLED:-0}" = "1" ] && declare -f xray_status >/dev/null && [ -f "${XRAY_CLIENTS:-/nonexistent}" ]; then
+        echo; log "VLESS+REALITY (TCP/443) clients:"; { cut -f1 "$XRAY_CLIENTS" 2>/dev/null | sed 's/^/  /'; } || true
+    fi
 }
 
 usage() {
-    sed -n '3,40p' "$SELF_SRC" | sed 's/^# \{0,1\}//'
+    awk 'NR>=3 && /^#/ {sub(/^# ?/,""); print; next} NR>=3 {exit}' "$SELF_SRC"
 }
+
+# Load the optional TCP/443 (Xray VLESS+REALITY) leg if present.
+for _xs in "$SCRIPT_DIR/lib/xray.sh" "$AWG_WORKDIR/lib/xray.sh"; do
+    [ -f "$_xs" ] && { . "$_xs"; break; }
+done
 
 # ---------------------------------------------------------------------------
 # Dispatch
@@ -370,10 +440,15 @@ usage() {
 cmd="${1:-install}"
 case "$cmd" in
     install|"")            shift || true; cmd_install "$@" ;;
-    add|remove|list|stats|show|regen|backup|restore|check|diagnose|repair-module|restart)
+    add)                  cmd_add "${@:2}" ;;
+    remove)               cmd_remove "${2:-}" ;;
+    list)                 cmd_list "${@:2}" ;;
+    stats|show|regen|backup|restore|check|diagnose|repair-module|restart)
                           need_root; manage "$cmd" "${@:2}" ;;
     rotate-sni)           cmd_rotate_sni "${2:-}" ;;
     rotate-i1)            cmd_rotate_i1 ;;
+    rotate-reality)       declare -f cmd_rotate_reality >/dev/null && cmd_rotate_reality || die "TCP leg unavailable (lib/xray.sh missing)" ;;
+    rotate-reality-target) declare -f cmd_rotate_reality_target >/dev/null && cmd_rotate_reality_target "${2:-}" || die "TCP leg unavailable (lib/xray.sh missing)" ;;
     status)               cmd_status ;;
     uninstall)            need_root; ( cd "$AWG_WORKDIR" 2>/dev/null && AWG_YES=1 bash "$UPSTREAM_SCRIPT" --uninstall --yes ) || manage uninstall || die "uninstall failed" ;;
     help|-h|--help)       usage ;;

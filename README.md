@@ -16,7 +16,7 @@
 </div>
 
 > [!WARNING]
-> **AmneziaWG is UDP‑only.** It mimics QUIC/DNS/SIP but has no TCP transport. On networks that block *all* UDP — or allow only TCP‑443 to a CDN — it **cannot connect**. Keep an **OpenVPN+Cloak** or **VLESS+REALITY** (TCP/443) fallback on the same box. See [Honest limits](#️-honest-limits).
+> **AmneziaWG is UDP‑only.** On networks that block *all* UDP it can't connect on its own — so root.vpn ships an **optional TCP/443 leg (VLESS + REALITY via Xray)**: set `TCP_ENABLED=1` and every client gets a second `vless://` QR for UDP‑blocked networks. See [TCP/443 leg](#-tcp443-leg--vlessreality) and the full [v2 design](docs/DESIGN-v2-tcp-masking.md).
 
 ---
 
@@ -87,9 +87,36 @@ It's a moving target. If a route degrades: `sudo awg2 rotate-sni new.example.com
 | `sudo awg2 status` | interface + obfuscation summary |
 | `sudo awg2 rotate-sni <domain>` | new QUIC SNI, re‑apply, regen all clients |
 | `sudo awg2 rotate-i1` | fresh QUIC Initial (same SNI) |
+| `sudo awg2 rotate-reality` | new REALITY keypair (TCP/443 leg), re‑export links |
+| `sudo awg2 rotate-reality-target <host>` | change the REALITY decoy site |
 | `sudo awg2 uninstall` | remove everything |
 
 > After `rotate-sni` / `rotate-i1`, **re‑distribute** the updated client configs from `/root/awg/` — `I1` must be byte‑identical on server and every client. `awg2` treats a mismatch as a fatal error, so it is never silently shipped.
+
+## 🔁 TCP/443 leg — VLESS+REALITY
+
+AmneziaWG can't help where UDP is blocked. Enable a co‑located **TCP/443** path
+(VLESS + REALITY via [Xray‑core](https://github.com/XTLS/Xray-core), pinned `≥ v25.6.8`):
+
+```bash
+# defaults.conf
+TCP_ENABLED="1"
+TCP_TRANSPORT="vision"        # vision (China-leaning) | xhttp (RU-hardened, survives Nov-2025 TSPU)
+REALITY_DEST="www.nvidia.com" # a low-profile foreign TLS1.3 site to "borrow"
+```
+
+`sudo ./awg2` then also installs Xray, generates a per‑deploy REALITY keypair +
+per‑client UUID/shortId, and **each client gets a second `vless://` QR** for
+v2rayN / NekoBox / Hiddify. UDP/443 (AWG) and TCP/443 (Xray) coexist with no
+conflict. Why REALITY (vs Cloak/ShadowTLS/Trojan), why two daemons, the honest
+TLS‑in‑TLS ceiling, and the tiered good/better/max profiles are all in the
+[**v2 design doc**](docs/DESIGN-v2-tcp-masking.md).
+
+> [!NOTE]
+> No in‑app AWG↔VLESS auto‑failover exists yet, so the model is **two profiles**
+> (try AWG first; use the `vless://` one when UDP is blocked). For Russia prefer
+> `TCP_TRANSPORT="xhttp"`. Flow‑shaping (DAITA) is Mullvad‑only and **not**
+> available for self‑hosted AmneziaWG.
 
 ## 🧱 Hardened defaults (`defaults.conf`)
 
@@ -132,10 +159,13 @@ Each run produces a **unique** packet (random connection IDs/keys, GREASE, shuff
 ## 📁 Layout
 
 ```
-awg2              hardened entrypoint (install + management proxy + rotation)
-defaults.conf     baked defaults you edit once (AWG_SNI is the main one)
-lib/quic_i1.py    offline QUIC v1 Initial + SNI generator (RFC 9000/9001)
-NOTICE / LICENSE  MIT; attribution to bivlked/amneziawg-installer & amnezia-vpn
+awg2               hardened entrypoint (install + management proxy + rotation)
+defaults.conf      baked defaults you edit once (AWG_SNI, TCP_ENABLED, ...)
+lib/quic_i1.py     offline QUIC v1 Initial + SNI generator (RFC 9000/9001)
+lib/xray.sh        TCP/443 leg: install Xray, REALITY keys, clients, rotation
+lib/xray_config.py builds the Xray server JSON + vless:// links (vision/xhttp)
+docs/              v2 design (TCP/443 + max masking)
+NOTICE / LICENSE   MIT; attribution to bivlked/amneziawg-installer & amnezia-vpn
 ```
 
 ## 🙏 Credits & License

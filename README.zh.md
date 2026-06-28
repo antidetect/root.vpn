@@ -4,12 +4,11 @@
 
 ### 一条命令的 VPN，专为“在裸 WireGuard 被封的地方融入背景”而打造。
 
-**一条命令部署 AmneziaWG 2.0 (UDP/443) + VLESS·REALITY (TCP/443) —— 采用协议伪装，设计上让流量像普通 QUIC/TLS，并针对俄罗斯、中国、伊朗所用的 DPI 手法。**
+**一条命令部署 AmneziaWG 2.0 (UDP/443) + VLESS·REALITY (TCP/443) —— 采用协议伪装，设计上让 443 端口的流量像普通 QUIC/TLS。**
 
 ![License](https://img.shields.io/badge/License-MIT-22c55e?style=for-the-badge)
 ![AmneziaWG](https://img.shields.io/badge/AmneziaWG-2.0-3b82f6?style=for-the-badge)
-![REALITY](https://img.shields.io/badge/VLESS-REALITY-a855f7?style=for-the-badge)
-![Anti-DPI](https://img.shields.io/badge/Anti--DPI-设计层面-ef4444?style=for-the-badge)<br>
+![REALITY](https://img.shields.io/badge/VLESS-REALITY-a855f7?style=for-the-badge)<br>
 ![Tested](https://img.shields.io/badge/端到端测试-真实%20Ubuntu%2024.04%20✓-16a34a?style=for-the-badge)
 ![Leaks](https://img.shields.io/badge/IP%2FDNS%2FIPv6%20泄漏-无%20(实验室%20E2E)-16a34a?style=for-the-badge)
 ![One command](https://img.shields.io/badge/安装-一条命令-f59e0b?style=for-the-badge)
@@ -20,7 +19,7 @@
 </div>
 
 > [!IMPORTANT]
-> **实话实说：** root.vpn 在**设计上**让流量像普通上网，并已在**真实服务器上端到端测试**（见下）。它**尚未**针对俄/中/伊的实网审查做测试——抗 DPI 是一种*设计属性*，而非经实地验证的结果。见[诚实的局限](#️-诚实的局限)。绝不卖“神油”。
+> **实话实说：** root.vpn 在**设计上**让流量像普通 QUIC/TLS，并已在**真实服务器上端到端测试**（见下）。它**尚未**针对实网审查系统做测试——伪装是一种*设计属性*，而非经实地验证的结果。见 [Russia / TSPU edition](#-russia--tspu-edition) 与[诚实的局限](#️-诚实的局限)。绝不卖“神油”。
 
 ## 安装（无需 git）
 
@@ -39,7 +38,7 @@ curl -fsSL https://raw.githubusercontent.com/antidetect/root.vpn/main/install.sh
 
 ## ✨ 为什么选 root.vpn
 
-- 🥷 **为融入而生，不只是加密。** 裸 WireGuard/OpenVPN 易被指纹识别、在 RU/CN/IR 被大面积封锁。root.vpn 把*开场数据包*伪装成发往真实网站的 **QUIC client Initial**，TCP 腿用 **REALITY** 中继真实第三方网站的 TLS 握手——主动探测你的服务器只会拿回那个真实网站。
+- 🥷 **为融入而生，不只是加密。** 裸 WireGuard/OpenVPN 易被指纹识别、在许多受限网络中被封锁。root.vpn 把*开场数据包*伪装成发往真实网站的 **QUIC client Initial**，TCP 腿用 **REALITY** 中继真实第三方网站的 TLS 握手——主动探测你的服务器只会拿回那个真实网站。
 - 🎲 **两次安装绝不雷同。** 垃圾包、逐消息填充、范围化报头和 QUIC 伪装开场都**按部署随机化**（连接 ID、TLS random、key share、GREASE、扩展顺序皆不同）。这消除了服务器间共享的静态字节特征——但**不**声称能击败 ML/连接模式分类器。
 - 🚪 **443 上 UDP *与* TCP。** 同机共存、互不冲突——已在真机上验证两者都在监听。
 - ⚡ **一条命令，其余交给服务器。** 装内核模块、生成密钥、构建配置、开防火墙、配 NAT、创建首个客户端并打印二维码。（需 root + 出站 HTTPS；新内核上可能重启续跑。）
@@ -150,6 +149,32 @@ sudo awg2 uninstall
 | **CDN 前置 / 后量子** | CDN 前置 XHTTP+TLS · VLESS 加密（ML‑KEM） | **实验性 / 手动**，默认关闭，不在测试基线内 |
 
 工程取舍与威胁映射：**[docs/DESIGN‑v2‑tcp‑masking.md](docs/DESIGN-v2-tcp-masking.md)**。
+
+## 🇷🇺 Russia / TSPU edition
+
+> [!IMPORTANT]
+> 这是针对俄罗斯 TSPU 环境的配置方案，汇编自 2026 年社区实测报告（net4people/bbs、Habr）——**本项目未对实网 TSPU 进行验证**。以下措施只是提高检测成本/改变流量模式，均非已证实的绕过。决定性因素通常是你的**出口 IP/ASN**，而这里任何开关都改不了它。
+
+**若某条线路被封，按顺序逐项尝试**（每项是 `defaults.conf` 中的一个变量或环境变量，然后重跑 `sudo awg2`）：
+
+1. **去掉 Vision → 改 XHTTP。** 据报 2025‑11 的 TSPU“冻结”针对 :443 上单条 `xtls‑rprx‑vision` 流（服务器→客户端约 16 KB 后停止）。`TCP_TRANSPORT="xhttp"` → 重跑。（本仓库以 XHTTP 替代未提供的 mux。）
+2. **离开 :443。** 据报该冻结与 443 端口绑定；高端口表现更好。`TCP_PORT="8443"`（防火墙会跟随）。代价：失去“像 HTTPS”的掩护，在白名单模式运营商上更差。
+3. **更换干净的 REALITY 伪装目标并轮换。** TSPU 按 SNI 计数握手，共享 SNI 烧得更快。`awg2 rotate-reality-target <干净的 TLS1.3+h2 主机>`，再 `awg2 rotate-reality`。
+4. **蜂窝 → 移动预设（UDP 腿）。** `AWG_PRESET="mobile"`（Jc=3、收窄 Jmax）；保持 `AWG_MIMICRY="quic"` + 低调 `AWG_SNI`；运营商适配时 `awg2 rotate-sni <域名>`。
+5. **Firefox uTLS 指纹。** 实测对 Firefox/Edge 比 Chrome 宽容：`XRAY_FP="firefox"`。（治不了体量冻结。）
+6. **清理 ASN——开关解决不了的部分**（见下）。仓库内唯一的“漂白”是 CDN 前置（`CDN_DOMAIN` + 你的域名/证书；实验性/手动）。
+7. **两端 Xray 保持最新**（固定的 `XRAY_VERSION` 即可；客户端保持同版本）。
+
+| 症状 | 对策 |
+|---|---|
+| UDP / QUIC 被限速 | 保持 AWG + 低调 SNI；UDP 不可用则用 TCP 腿；仅当高 UDP 被封而 :443 未封时把 `AWG_PORT` 降到低 UDP 端口 |
+| Vision 在 :443 冻结（~16 KB，约 60s 恢复） | `TCP_TRANSPORT="xhttp"` **且** `TCP_PORT="8443"`；仅改 `XRAY_FP` 没用 |
+| 握手成功随后中断 | ASN/IP 被切——先 `rotate-reality-target` / `rotate-reality`；仍旧则出口已烧 → 换更干净的机器或用 `CDN_DOMAIN` |
+| 蜂窝特性 / 白名单模式 | `AWG_PRESET="mobile"`、轮换 SNI；白名单运营商上协议选择无用——只有白名单内的境内链路或 CDN 边缘有机会，离开 :443 反而**有害** |
+
+**非开箱即用（手动 / 路线图）：** 逐连接 mux/XMUX（无开关——以 XHTTP 替代）；`XHTTP_MODE=packet-up`（需手改 `/etc/rootvpn/xray/params`）；Shadowsocks‑2022 / AnyTLS（不在仓库）；**境内链路**（客户端 → 白名单境内 VPS → 境外出口——俄罗斯最强生存方案，但超出本工具范围：另起一个实例手动串联）；按运营商的 AWG `I1` 微调（手改 `awg0.conf`）。
+
+**IP / ASN 现实（配置治不了）：** TSPU 按目的 CIDR/ASN 过滤——在被烧网段（Hetzner AS24940、OVH、DO）上即使完美的 REALITY 也会在握手后断流。大致生存力，好→差：**住宅 / 移动（4G/LTE） > 经链路的境内白名单网段 > 大型云（AWS/Azure/GCP） > 廉价 DC（预期握手后停滞）**。据此选出口 IP，并视其为移动目标。
 
 ## 🛡️ 加固
 

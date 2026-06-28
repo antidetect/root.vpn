@@ -4,12 +4,11 @@
 
 ### The one‑command VPN built to blend in where plain WireGuard gets blocked.
 
-**AmneziaWG 2.0 (UDP/443) + VLESS·REALITY (TCP/443) from a single command — using protocol‑masking designed to resemble ordinary QUIC/TLS traffic and to target the DPI techniques used in Russia, China and Iran.**
+**AmneziaWG 2.0 (UDP/443) + VLESS·REALITY (TCP/443) from a single command — using protocol‑masking designed to resemble ordinary QUIC/TLS traffic on port 443.**
 
 ![License](https://img.shields.io/badge/License-MIT-22c55e?style=for-the-badge)
 ![AmneziaWG](https://img.shields.io/badge/AmneziaWG-2.0-3b82f6?style=for-the-badge)
-![REALITY](https://img.shields.io/badge/VLESS-REALITY-a855f7?style=for-the-badge)
-![Anti-DPI](https://img.shields.io/badge/Anti--DPI-by%20design-ef4444?style=for-the-badge)<br>
+![REALITY](https://img.shields.io/badge/VLESS-REALITY-a855f7?style=for-the-badge)<br>
 ![Tested](https://img.shields.io/badge/E2E%20tested-live%20Ubuntu%2024.04%20✓-16a34a?style=for-the-badge)
 ![Leaks](https://img.shields.io/badge/IP%2FDNS%2FIPv6%20leaks-none%20(lab%20E2E)-16a34a?style=for-the-badge)
 ![One command](https://img.shields.io/badge/setup-one%20command-f59e0b?style=for-the-badge)
@@ -20,7 +19,7 @@
 </div>
 
 > [!IMPORTANT]
-> **Straight talk:** root.vpn is **engineered** to look like normal internet, and it's been **end‑to‑end tested on a real server** (see below). It has **not** been tested against live Russian/Chinese/Iranian censorship — the anti‑DPI behaviour is a *design property*, not a field‑proven result. See [Honest limits](#️-honest-limits). No snake oil here.
+> **Straight talk:** root.vpn is **engineered** to resemble normal QUIC/TLS traffic, and it's been **end‑to‑end tested on a real server** (see below). It has **not** been tested against live censorship systems — the masking is a *design property*, not a field‑proven result. See the [Russia / TSPU edition](#-russia--tspu-edition) and [Honest limits](#️-honest-limits). No snake oil here.
 
 ## Install (no git needed)
 
@@ -39,7 +38,7 @@ By default you get **two ways in on :443**: fast **AmneziaWG/UDP** *and* a **VLE
 
 ## ✨ Why root.vpn
 
-- 🥷 **Built to blend in, not just encrypt.** Plain WireGuard/OpenVPN are easy to fingerprint and are widely blocked in RU/CN/IR. root.vpn disguises the *opening packet* as a real **QUIC client Initial to a legitimate website**, and its TCP leg uses **REALITY**, which relays a real third‑party site's TLS handshake — so an active prober that pokes your server just gets that real site back.
+- 🥷 **Built to blend in, not just encrypt.** Plain WireGuard/OpenVPN are easy to fingerprint and are blocked on many restrictive networks. root.vpn disguises the *opening packet* as a real **QUIC client Initial to a legitimate website**, and its TCP leg uses **REALITY**, which relays a real third‑party site's TLS handshake — so an active prober that pokes your server just gets that real site back.
 - 🎲 **No two installs look alike.** Junk packets, per‑message padding, ranged headers and the QUIC‑mimicry opener are **randomized per deployment** (connection IDs, TLS random, key share, GREASE, extension order all vary). That removes a shared static byte‑signature across servers — it does **not** claim to defeat ML/connection‑pattern classifiers.
 - 🚪 **UDP *and* TCP on :443.** Co‑located, no conflict — verified both listening on a live box.
 - ⚡ **One command, the server does the rest.** Installs the kernel module, generates keys, builds configs, opens the firewall, sets up NAT, creates your first client and prints the QR. (Needs root + outbound HTTPS; may reboot/resume on a fresh kernel.)
@@ -150,6 +149,32 @@ Each client gets an **AmneziaWG profile** and (when the TCP leg is on) a **VLESS
 | **CDN front / post‑quantum** | CDN‑fronted XHTTP+TLS · VLESS encryption (ML‑KEM) | **experimental / manual**, off by default, not in the tested baseline |
 
 Engineering rationale + threat mapping: **[docs/DESIGN‑v2‑tcp‑masking.md](docs/DESIGN-v2-tcp-masking.md)**.
+
+## 🇷🇺 Russia / TSPU edition
+
+> [!IMPORTANT]
+> A configuration profile for TSPU conditions, assembled from 2026 community field reports (net4people/bbs, Habr) — **not verified by this project against live TSPU**. Everything below raises cost / changes traffic patterns; none of it is a proven bypass. The decisive factor is usually your **exit IP/ASN**, which no knob here can change.
+
+**If a route gets blocked, work down this list** — each is one var in `defaults.conf` (or an env var), then re‑run `sudo awg2`:
+
+1. **Drop Vision → XHTTP.** The reported Nov‑2025 TSPU freeze hits the single `xtls‑rprx‑vision` flow on :443 (server→client stalls after ~16 KB). `TCP_TRANSPORT="xhttp"` → re‑run. (In‑repo substitute for mux, which root.vpn doesn't ship.)
+2. **Move off :443.** The freeze is reported port‑443‑specific; high ports fared better. `TCP_PORT="8443"` (the firewall follows). Trade‑off: loses the "looks‑like‑HTTPS" cover and is worse on whitelist‑mode carriers.
+3. **Fresh, good REALITY decoy + rotate.** TSPU counts handshakes per‑SNI, so a shared SNI burns faster. `awg2 rotate-reality-target <clean TLS1.3+h2 host>` then `awg2 rotate-reality`.
+4. **Cellular → mobile preset (UDP leg).** `AWG_PRESET="mobile"` (fixes Jc=3, narrows Jmax); keep `AWG_MIMICRY="quic"` + a low‑profile `AWG_SNI`; `awg2 rotate-sni <domain>` when an ISP adapts.
+5. **Firefox uTLS fingerprint.** Field reports tolerate Firefox/Edge over Chrome: `XRAY_FP="firefox"`. (Does not fix the volume freeze.)
+6. **Clean the ASN — the part no knob fixes** (see below). The only in‑repo launder is CDN‑fronting (`CDN_DOMAIN` + your own domain/cert; experimental/manual).
+7. **Keep Xray current on both ends** (pinned `XRAY_VERSION` is fine; keep clients matched).
+
+| Symptom | Action |
+|---|---|
+| UDP / QUIC throttled | keep AWG with a low‑profile SNI; if UDP is unusable, use the TCP leg; drop `AWG_PORT` to a low UDP port only if high‑UDP is blocked but :443 isn't |
+| Vision frozen on :443 (~16 KB, recovers ~60s) | `TCP_TRANSPORT="xhttp"` **and** `TCP_PORT="8443"`; changing `XRAY_FP` alone won't help |
+| Handshake OK, then dies | ASN/IP cut — `rotate-reality-target` / `rotate-reality`; if it persists the exit is burned → cleaner box or `CDN_DOMAIN` |
+| Mobile carrier quirks / allowlist mode | `AWG_PRESET="mobile"`, rotate SNI; on allowlist carriers no protocol choice helps — only a whitelisted in‑RU chain or CDN edge, and off‑443 will **hurt** |
+
+**Not turnkey (manual / roadmap):** per‑connection mux/XMUX (no knob — XHTTP is the substitute); `XHTTP_MODE=packet-up` (hand‑edit `/etc/rootvpn/xray/params`); Shadowsocks‑2022 / AnyTLS (not in repo); a **domestic chain** (client → whitelisted in‑RU VPS → foreign exit — the strongest RU survivor, but out of scope: run a second instance and chain manually); per‑carrier AWG `I1` tweaks (manual `awg0.conf` edit).
+
+**IP / ASN reality (the part no config fixes):** TSPU filters by destination CIDR/ASN — a flawless REALITY config on a burned subnet (Hetzner AS24940, OVH, DO) still dies after the handshake. Rough survivability, best→worst: **residential / mobile (4G/LTE) > whitelisted in‑country ranges (via a chain) > big hyperscalers (AWS/Azure/GCP) > budget DC (expect handshake‑then‑stall)**. Pick the exit IP accordingly and treat it as a moving target.
 
 ## 🛡️ Hardening
 

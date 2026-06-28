@@ -36,7 +36,7 @@
 #   sudo awg2 uninstall
 #   sudo awg2 help
 
-set -euo pipefail
+set -Eeuo pipefail   # -E: ERR trap is inherited by functions (so aborts report their line)
 
 # ---------------------------------------------------------------------------
 # Locate ourselves / load baked defaults
@@ -208,6 +208,7 @@ apply_quic_i1() {
 # ---------------------------------------------------------------------------
 # Fetch the pinned upstream installer
 # ---------------------------------------------------------------------------
+UPSTREAM_INSTALLER=""   # set by fetch_upstream (a global, so log/ok/warn stdout is not captured)
 fetch_upstream() {
     mkdir -p "$AWG_WORKDIR"
     local url="https://raw.githubusercontent.com/$UPSTREAM_REPO/$UPSTREAM_VERSION/$UPSTREAM_SCRIPT"
@@ -221,7 +222,7 @@ fetch_upstream() {
         warn "UPSTREAM_SHA256 not pinned; integrity rests on the immutable git tag $UPSTREAM_VERSION over HTTPS"
         log  "this build's hash: $(sha256sum "$dst" | cut -d' ' -f1)"
     fi
-    echo "$dst"
+    UPSTREAM_INSTALLER="$dst"
 }
 
 UPSTREAM_FLAGS=()                                  # populated by build_upstream_flags
@@ -235,6 +236,7 @@ build_upstream_flags() {
     UPSTREAM_FLAGS+=("--port=$AWG_PORT")
     [ -n "$AWG_PRESET" ] && UPSTREAM_FLAGS+=("--preset=$AWG_PRESET")
     [ -n "$AWG_SUBNET" ] && UPSTREAM_FLAGS+=("--subnet=$AWG_SUBNET")
+    return 0   # never let a trailing false test become the function's exit status
 }
 
 validate_config() {
@@ -321,7 +323,7 @@ cmd_install() {
         fi
     fi
 
-    local installer; installer="$(fetch_upstream)"
+    fetch_upstream; local installer="$UPSTREAM_INSTALLER"
     build_upstream_flags
     log "running upstream:  bash $UPSTREAM_SCRIPT ${UPSTREAM_FLAGS[*]}"
     ( cd "$AWG_WORKDIR" && AWG_YES=1 bash "$installer" "${UPSTREAM_FLAGS[@]}" )
